@@ -13,8 +13,6 @@ import { useCachedPromise } from "@raycast/utils";
 import { readFile, access } from "fs/promises";
 import { homedir } from "os";
 import { basename, dirname } from "path";
-import { execFile } from "child_process";
-import { promisify } from "util";
 import { useEffect, useState } from "react";
 import tildify from "tildify";
 
@@ -26,14 +24,17 @@ import {
   movePinnedProject,
   type PinnedProject,
 } from "./pinned";
-import { findNvimSockets, getSocketCwd, focusWindowForSocket } from "./nvim-sockets";
+import {
+  findNvimSockets,
+  getSocketCwd,
+  focusWindowForSocket,
+} from "./nvim-sockets";
 import { getGitBranch } from "./git";
+import { launchNeovide } from "./neovide";
 
-const execFileAsync = promisify(execFile);
-
-const NEOVIDE_BIN = "/opt/homebrew/bin/neovide";
 const PROJECT_HISTORY = `${homedir()}/.local/share/nvim/project_nvim/project_history`;
 const CACHE_KEY = "neovide-recent-projects";
+const OWN_MRU_KEY = "neovide-own-mru"; // projects opened via this extension
 const cache = new Cache();
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -59,16 +60,43 @@ function getInitialProjects(): Project[] {
   }
 }
 
+function getOwnMru(): Project[] {
+  const raw = cache.get(OWN_MRU_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+/** Prepend a project to our own MRU list so it shows up immediately. */
+function recordOpened(project: Project): void {
+  const existing = getOwnMru().filter((p) => p.path !== project.path);
+  cache.set(OWN_MRU_KEY, JSON.stringify([project, ...existing]));
+}
+
 async function loadProjects(): Promise<Project[]> {
-  const content = await readFile(PROJECT_HISTORY, "utf-8");
-  const lines = content
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .reverse(); // project_nvim: oldest first → reverse for most-recent-first
+  // Read project_nvim history (may not include projects opened via Raycast)
+  let nvimPaths: string[] = [];
+  try {
+    const content = await readFile(PROJECT_HISTORY, "utf-8");
+    nvimPaths = content
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .reverse(); // oldest first → reverse for most-recent-first
+  } catch {
+    // file may not exist yet
+  }
+
+  // Merge: own MRU first (most recently opened via Raycast), then nvim history
+  const ownPaths = getOwnMru().map((p) => p.path);
+  const seen = new Set<string>(ownPaths);
+  const merged = [...ownPaths, ...nvimPaths.filter((p) => !seen.has(p))];
 
   const checked = await Promise.all(
-    lines.map(async (p) => {
+    merged.map(async (p) => {
       try {
         await access(p);
         return p;
@@ -104,7 +132,10 @@ async function loadOpenSockets(): Promise<Map<string, string>> {
 }
 
 /** Given all open sockets (cwd→socket), find the socket for a project path. */
-function socketForProject(cwdMap: Map<string, string>, projectPath: string): string | null {
+function socketForProject(
+  cwdMap: Map<string, string>,
+  projectPath: string,
+): string | null {
   const prefix = projectPath.endsWith("/") ? projectPath : projectPath + "/";
   for (const [cwd, socket] of cwdMap) {
     if (cwd === projectPath || cwd.startsWith(prefix)) return socket;
@@ -115,7 +146,10 @@ function socketForProject(cwdMap: Map<string, string>, projectPath: string): str
 // ─── Actions ───────────────────────────────────────────────────────────────
 
 async function focusProject(project: OpenProject): Promise<void> {
-  const toast = await showToast({ style: Toast.Style.Animated, title: "Focusing window…" });
+  const toast = await showToast({
+    style: Toast.Style.Animated,
+    title: "Focusing window…",
+  });
   try {
     await focusWindowForSocket(project.socket);
     await closeMainWindow();
@@ -129,9 +163,13 @@ async function focusProject(project: OpenProject): Promise<void> {
 }
 
 async function openNewProject(project: Project): Promise<void> {
-  const toast = await showToast({ style: Toast.Style.Animated, title: `Opening ${project.name}…` });
+  const toast = await showToast({
+    style: Toast.Style.Animated,
+    title: `Opening ${project.name}…`,
+  });
   try {
-    await execFileAsync(NEOVIDE_BIN, ["--fork", "--", "--cmd", `cd ${project.path}`]);
+    recordOpened(project);
+    await launchNeovide(["--cmd", `cd ${project.path}`]);
     await closeMainWindow();
     toast.style = Toast.Style.Success;
     toast.title = `Opened ${project.name}`;
@@ -155,14 +193,22 @@ function OpenProjectItem({ project }: { project: OpenProject }) {
     getGitBranch(project.path).then((b) => {
       if (mounted && b) setGitBranch(b);
     });
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [project.path]);
 
   const accessories: List.Item.Accessory[] = [
-    { icon: { source: Icon.CircleFilled, tintColor: Color.Green }, tooltip: "Open in Neovide" },
+    {
+      icon: { source: Icon.CircleFilled, tintColor: Color.Green },
+      tooltip: "Open in Neovide",
+    },
   ];
   if (gitBranch) {
-    accessories.push({ tag: { value: gitBranch, color: Color.Green }, tooltip: `Git branch: ${gitBranch}` });
+    accessories.push({
+      tag: { value: gitBranch, color: Color.Green },
+      tooltip: `Git branch: ${gitBranch}`,
+    });
   }
 
   return (
@@ -186,10 +232,17 @@ function OpenProjectItem({ project }: { project: OpenProject }) {
               shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
               onAction={() => openNewProject(project)}
             />
-            <Action.ShowInFinder path={project.path} shortcut={{ modifiers: ["cmd"], key: "f" }} />
+            <Action.ShowInFinder
+              path={project.path}
+              shortcut={{ modifiers: ["cmd"], key: "f" }}
+            />
           </ActionPanel.Section>
           <ActionPanel.Section>
-            <Action.CopyToClipboard title="Copy Path" content={prettyPath} shortcut={{ modifiers: ["cmd"], key: "." }} />
+            <Action.CopyToClipboard
+              title="Copy Path"
+              content={prettyPath}
+              shortcut={{ modifiers: ["cmd"], key: "." }}
+            />
           </ActionPanel.Section>
         </ActionPanel>
       }
@@ -201,11 +254,13 @@ function OpenProjectItem({ project }: { project: OpenProject }) {
 
 function ProjectItem({
   project,
+  socket,
   pinned,
   pinnedList,
   setPinnedList,
 }: {
   project: Project;
+  socket?: string | null;
   pinned: boolean;
   pinnedList: PinnedProject[];
   setPinnedList: (list: PinnedProject[]) => void;
@@ -220,12 +275,24 @@ function ProjectItem({
     getGitBranch(project.path).then((b) => {
       if (mounted && b) setGitBranch(b);
     });
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [project.path]);
 
-  const accessories: List.Item.Accessory[] = [];
+  const accessories: List.Item.Accessory[] = socket
+    ? [
+        {
+          icon: { source: Icon.CircleFilled, tintColor: Color.Green },
+          tooltip: "Open in Neovide",
+        },
+      ]
+    : [];
   if (gitBranch) {
-    accessories.push({ tag: { value: gitBranch, color: Color.Green }, tooltip: `Git branch: ${gitBranch}` });
+    accessories.push({
+      tag: { value: gitBranch, color: Color.Green },
+      tooltip: `Git branch: ${gitBranch}`,
+    });
   }
 
   const idx = pinnedList.findIndex((p) => p.path === project.path);
@@ -242,13 +309,47 @@ function ProjectItem({
       actions={
         <ActionPanel>
           <ActionPanel.Section>
-            <Action title="Open in Neovide" icon={Icon.Terminal} onAction={() => openNewProject(project)} />
-            <Action.ShowInFinder path={project.path} shortcut={{ modifiers: ["cmd"], key: "f" }} />
-            <Action.OpenWith path={project.path} shortcut={{ modifiers: ["cmd"], key: "o" }} />
+            {socket ? (
+              <>
+                <Action
+                  title="Focus Window"
+                  icon={Icon.ArrowRight}
+                  onAction={() => focusProject({ ...project, socket })}
+                />
+                <Action
+                  title="Open New Window"
+                  icon={Icon.Terminal}
+                  shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
+                  onAction={() => openNewProject(project)}
+                />
+              </>
+            ) : (
+              <Action
+                title="Open in Neovide"
+                icon={Icon.Terminal}
+                onAction={() => openNewProject(project)}
+              />
+            )}
+            <Action.ShowInFinder
+              path={project.path}
+              shortcut={{ modifiers: ["cmd"], key: "f" }}
+            />
+            <Action.OpenWith
+              path={project.path}
+              shortcut={{ modifiers: ["cmd"], key: "o" }}
+            />
           </ActionPanel.Section>
           <ActionPanel.Section>
-            <Action.CopyToClipboard title="Copy Name" content={project.name} shortcut={{ modifiers: ["cmd"], key: "." }} />
-            <Action.CopyToClipboard title="Copy Path" content={prettyPath} shortcut={{ modifiers: ["cmd", "shift"], key: "." }} />
+            <Action.CopyToClipboard
+              title="Copy Name"
+              content={project.name}
+              shortcut={{ modifiers: ["cmd"], key: "." }}
+            />
+            <Action.CopyToClipboard
+              title="Copy Path"
+              content={prettyPath}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "." }}
+            />
           </ActionPanel.Section>
           <ActionPanel.Section>
             {!pinned ? (
@@ -257,7 +358,10 @@ function ProjectItem({
                 icon={Icon.Pin}
                 shortcut={{ modifiers: ["cmd", "shift"], key: "p" }}
                 onAction={async () => {
-                  const next = await pinProject({ path: project.path, name: project.name });
+                  const next = await pinProject({
+                    path: project.path,
+                    name: project.name,
+                  });
                   setPinnedList(next);
                   await showToast({ title: "Pinned project" });
                 }}
@@ -291,7 +395,10 @@ function ProjectItem({
                     icon={Icon.ArrowDown}
                     shortcut={{ modifiers: ["cmd", "opt"], key: "arrowDown" }}
                     onAction={async () => {
-                      const next = await movePinnedProject(project.path, "down");
+                      const next = await movePinnedProject(
+                        project.path,
+                        "down",
+                      );
                       setPinnedList(next);
                     }}
                   />
@@ -317,7 +424,9 @@ function ProjectItem({
               style={Action.Style.Destructive}
               shortcut={{ modifiers: ["ctrl"], key: "x" }}
               onAction={async () => {
-                const updated = getInitialProjects().filter((p) => p.path !== project.path);
+                const updated = getInitialProjects().filter(
+                  (p) => p.path !== project.path,
+                );
                 cache.set(CACHE_KEY, JSON.stringify(updated));
                 await showToast({ title: "Removed from list" });
               }}
@@ -373,6 +482,7 @@ export default function ProjectList() {
           <ProjectItem
             key={`pinned-${p.path}`}
             project={p}
+            socket={socketForProject(cwdMap, p.path)}
             pinned={true}
             pinnedList={pinnedList}
             setPinnedList={setPinnedList}

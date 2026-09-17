@@ -1,5 +1,6 @@
 import { closeMainWindow, showToast, Toast } from "@raycast/api";
 import { runAppleScript } from "@raycast/utils";
+import { launchNeovide } from "./neovide";
 
 /**
  * Open a new blank Neovide window via AppleScript (menu bar: File → New OS Window).
@@ -20,10 +21,7 @@ export async function openNewNeovideWindow(): Promise<void> {
     `);
   } catch {
     // Fallback: spawn via CLI
-    const { execFile } = await import("child_process");
-    const { promisify } = await import("util");
-    const exec = promisify(execFile);
-    await exec("/opt/homebrew/bin/neovide", ["--fork"]);
+    await launchNeovide();
   }
 }
 

@@ -1,16 +1,24 @@
-import { List, ActionPanel, Action, Icon, Color, showToast, Toast, closeMainWindow } from "@raycast/api";
+import {
+  List,
+  ActionPanel,
+  Action,
+  Icon,
+  Color,
+  showToast,
+  Toast,
+  closeMainWindow,
+} from "@raycast/api";
 import { useCachedPromise } from "@raycast/utils";
-import { homedir } from "os";
-import { execFile } from "child_process";
-import { promisify } from "util";
 import tildify from "tildify";
 
 import { loadWorkspaces, type Workspace } from "./workspaces";
-import { findNvimSockets, getSocketCwd, focusWindowForSocket } from "./nvim-sockets";
+import {
+  findNvimSockets,
+  getSocketCwd,
+  focusWindowForSocket,
+} from "./nvim-sockets";
+import { launchNeovide } from "./neovide";
 import { useState, useEffect } from "react";
-
-const execFileAsync = promisify(execFile);
-const NEOVIDE_BIN = "/opt/homebrew/bin/neovide";
 
 // ─── Socket helpers (same pattern as ProjectList) ──────────────────────────
 
@@ -26,7 +34,10 @@ async function loadOpenSockets(): Promise<Map<string, string>> {
   return cwdMap;
 }
 
-function socketForPath(cwdMap: Map<string, string>, rootPath: string): string | null {
+function socketForPath(
+  cwdMap: Map<string, string>,
+  rootPath: string,
+): string | null {
   const prefix = rootPath.endsWith("/") ? rootPath : rootPath + "/";
   for (const [cwd, socket] of cwdMap) {
     if (cwd === rootPath || cwd.startsWith(prefix)) return socket;
@@ -56,7 +67,10 @@ function WorkspaceItem({
 
   const handleOpen = async () => {
     if (socket) {
-      const toast = await showToast({ style: Toast.Style.Animated, title: "Focusing window…" });
+      const toast = await showToast({
+        style: Toast.Style.Animated,
+        title: "Focusing window…",
+      });
       try {
         await focusWindowForSocket(socket);
         await closeMainWindow();
@@ -68,9 +82,12 @@ function WorkspaceItem({
         toast.message = err instanceof Error ? err.message : String(err);
       }
     } else {
-      const toast = await showToast({ style: Toast.Style.Animated, title: `Opening ${workspace.name}…` });
+      const toast = await showToast({
+        style: Toast.Style.Animated,
+        title: `Opening ${workspace.name}…`,
+      });
       try {
-        await execFileAsync(NEOVIDE_BIN, ["--fork", "--", "--cmd", `cd ${workspace.rootPath}`]);
+        await launchNeovide(["--cmd", `cd ${workspace.rootPath}`]);
         await closeMainWindow();
         toast.style = Toast.Style.Success;
         toast.title = `Opened ${workspace.name}`;
@@ -86,7 +103,10 @@ function WorkspaceItem({
     <List.Item
       title={workspace.name}
       subtitle={prettyRoot}
-      icon={{ source: Icon.Layers, tintColor: socket ? Color.Green : Color.SecondaryText }}
+      icon={{
+        source: Icon.Layers,
+        tintColor: socket ? Color.Green : Color.SecondaryText,
+      }}
       keywords={[workspace.name, ...workspace.paths]}
       accessories={accessories}
       detail={
@@ -95,7 +115,11 @@ function WorkspaceItem({
             <List.Item.Detail.Metadata>
               <List.Item.Detail.Metadata.Label title="Paths" />
               {workspace.paths.map((p) => (
-                <List.Item.Detail.Metadata.Label key={p} title="" text={tildify(p)} />
+                <List.Item.Detail.Metadata.Label
+                  key={p}
+                  title=""
+                  text={tildify(p)}
+                />
               ))}
             </List.Item.Detail.Metadata>
           }
@@ -115,16 +139,20 @@ function WorkspaceItem({
                 icon={Icon.Terminal}
                 shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
                 onAction={async () => {
-                  const toast = await showToast({ style: Toast.Style.Animated, title: `Opening ${workspace.name}…` });
+                  const toast = await showToast({
+                    style: Toast.Style.Animated,
+                    title: `Opening ${workspace.name}…`,
+                  });
                   try {
-                    await execFileAsync(NEOVIDE_BIN, ["--fork", "--", "--cmd", `cd ${workspace.rootPath}`]);
+                    await launchNeovide(["--cmd", `cd ${workspace.rootPath}`]);
                     await closeMainWindow();
                     toast.style = Toast.Style.Success;
                     toast.title = `Opened ${workspace.name}`;
                   } catch (err) {
                     toast.style = Toast.Style.Failure;
                     toast.title = "Failed";
-                    toast.message = err instanceof Error ? err.message : String(err);
+                    toast.message =
+                      err instanceof Error ? err.message : String(err);
                   }
                 }}
               />
@@ -162,8 +190,12 @@ export default function WorkspaceList() {
     keepPreviousData: true,
   });
 
-  const openWorkspaces = workspaces.filter((w) => socketForPath(cwdMap, w.rootPath) !== null);
-  const closedWorkspaces = workspaces.filter((w) => socketForPath(cwdMap, w.rootPath) === null);
+  const openWorkspaces = workspaces.filter(
+    (w) => socketForPath(cwdMap, w.rootPath) !== null,
+  );
+  const closedWorkspaces = workspaces.filter(
+    (w) => socketForPath(cwdMap, w.rootPath) === null,
+  );
 
   return (
     <List
@@ -176,7 +208,11 @@ export default function WorkspaceList() {
       {openWorkspaces.length > 0 && (
         <List.Section title={`Open (${openWorkspaces.length})`}>
           {openWorkspaces.map((w) => (
-            <WorkspaceItem key={w.name} workspace={w} socket={socketForPath(cwdMap, w.rootPath)} />
+            <WorkspaceItem
+              key={w.name}
+              workspace={w}
+              socket={socketForPath(cwdMap, w.rootPath)}
+            />
           ))}
         </List.Section>
       )}

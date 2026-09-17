@@ -29,4 +29,3 @@ declare namespace Arguments {
   /** Arguments passed to the `new-window` command */
   export type NewWindow = {}
 }
-

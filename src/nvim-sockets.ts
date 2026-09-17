@@ -41,7 +41,9 @@ export async function getSocketCwd(socket: string): Promise<string | null> {
  * Return the socket for a running nvim whose cwd equals projectPath
  * OR is a subdirectory of it (e.g. project /a/b matches cwd /a/b/src).
  */
-export async function findSocketForProject(projectPath: string): Promise<string | null> {
+export async function findSocketForProject(
+  projectPath: string,
+): Promise<string | null> {
   const sockets = await findNvimSockets();
   if (sockets.length === 0) return null;
 
@@ -67,8 +69,12 @@ export async function focusWindowForSocket(socket: string): Promise<void> {
 
   try {
     // Get the nvim PID that owns this specific socket file
-    const { stdout: lsofOut } = await execAsync(
-      `${LSOF} -nP 2>/dev/null | awk '$NF == "${socket}" {print $2; exit}'`,
+    const { stdout: lsofOut } = await execFileAsync(
+      LSOF,
+      ["-t", "--", socket],
+      {
+        timeout: 1000,
+      },
     );
     const nvimPid = lsofOut.trim();
 
@@ -83,7 +89,21 @@ export async function focusWindowForSocket(socket: string): Promise<void> {
             if procs is not {} then
               set p to item 1 of procs
               set frontmost of p to true
-              perform action "AXRaise" of (item 1 of (windows of p))
+              set editorWindow to missing value
+              set largestArea to 0
+              repeat with w in windows of p
+                try
+                  set windowSize to size of w
+                  set windowArea to (item 1 of windowSize) * (item 2 of windowSize)
+                  if windowArea > largestArea then
+                    set largestArea to windowArea
+                    set editorWindow to w
+                  end if
+                end try
+              end repeat
+              if editorWindow is not missing value then
+                perform action "AXRaise" of editorWindow
+              end if
             end if
           end tell
         `);
